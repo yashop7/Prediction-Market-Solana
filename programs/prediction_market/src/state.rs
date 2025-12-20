@@ -11,7 +11,7 @@ pub enum WinningOutcome {
 #[derive(InitSpace)]
 pub struct Market {
     pub authority: Pubkey,
-    pub market_id: u32,
+    pub market_id: u32, // This will be a No.
     pub settlement_deadline: i64,
     pub outcome_a_mint: Pubkey,
     pub outcome_b_mint: Pubkey,
