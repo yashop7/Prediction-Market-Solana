@@ -1,23 +1,30 @@
 use anchor_lang::prelude::*;
-pub mod state;
-pub mod instructions;
+use anchor_spl::token::{
+    self, spl_token::instruction::AuthorityType, Burn, Mint, MintTo, SetAuthority, Token,
+    TokenAccount, Transfer,
+};
 pub mod error;
+pub mod instructions;
+pub mod state;
 
+use error::PredictionMarketError;
 use instructions::*;
 use state::*;
-use error::PredictionMarketError;
-
 
 declare_id!("BnhQSbprbPZoruJ2WG6YwBDGNgjLg2DhcsHKvwwFa16P");
 
 #[program]
 pub mod prediction_market {
+    use std::{collections::btree_set::Difference, marker};
+
+    use anchor_spl::token;
+
     use super::*;
 
     pub fn initialize_market(
         ctx: Context<InitializeMarket>,
         market_id: u32,
-        settlement_deadline : i64
+        settlement_deadline: i64,
     ) -> Result<()> {
         let market = &mut ctx.accounts.market;
 
@@ -41,14 +48,194 @@ pub mod prediction_market {
         Ok(())
     }
 
-    pub fn split_tokens(
-        ctx: Context<SplitToken>,
-        market_id: u32,
-        amount: u64,
-    ) -> Result<()> {
-        require!(amount > 0 , PredictionMarketError::InvalidAmount);
-        
-        
+    pub fn split_tokens(ctx: Context<SplitToken>, market_id: u32, amount: u64) -> Result<()> {
+        let market = &mut ctx.accounts.market;
+        require!(amount > 0, PredictionMarketError::InvalidAmount);
+        require!(
+            !market.is_settled,
+            PredictionMarketError::MarketAlreadySettled
+        );
+        require!(
+            Clock::get()?.unix_timestamp < market.settlement_deadline,
+            PredictionMarketError::MarketExpired
+        );
+
+        //Difference
+        //         ctx.accounts.user_collateral         // Type: Account<TokenAccount>
+        //         ctx.accounts.user_collateral.to_account_info()  // Type: AccountInfo
+
+        // Transferring the tokens from user account into Collateral Vault
+        token::transfer(
+            CpiContext::new(
+                ctx.accounts.token_program.to_account_info(),
+                Transfer {
+                    from: ctx.accounts.user_collateral.to_account_info(),
+                    to: ctx.accounts.collateral_vault.to_account_info(),
+                    authority: ctx.accounts.user.to_account_info(),
+                },
+            ),
+            amount,
+        );
+        let market_id_bytes = market.market_id.to_le_bytes();
+        let seeds = &[b"market", market_id_bytes.as_ref(), &[market.bump]];
+
+        //Minting Outcome A tokens
+        token::mint_to(
+            CpiContext::new_with_signer(
+                ctx.accounts.token_program.to_account_info(),
+                MintTo {
+                    mint: ctx.accounts.outcome_a_mint.to_account_info(),
+                    to: ctx.accounts.user.to_account_info(),
+                    authority: market.to_account_info(),
+                },
+                &[seeds],
+            ),
+            amount,
+        );
+
+        //Minting Outcome B tokens
+        token::mint_to(
+            CpiContext::new_with_signer(
+                ctx.accounts.token_program.to_account_info(),
+                MintTo {
+                    mint: ctx.accounts.outcome_b_mint.to_account_info(),
+                    to: ctx.accounts.user.to_account_info(),
+                    authority: market.to_account_info(),
+                },
+                &[seeds],
+            ),
+            amount,
+        );
+
+        market.total_collateral_locked = market
+            .total_collateral_locked
+            .checked_add(amount)
+            .ok_or(PredictionMarketError::MathOverflow)?;
+        // What ok_or is doing that, we are getting the Some(value) or None from the checked_add
+        // ok_or is returning us Result<u64,Err>,
+        // .ok_or(error) → converts to Result<u64, Error>:
+        // Some(value) → Ok(value)
+        // None → Err(PredictionMarketError::MathOverflow)
+        msg!("Minted {} outcome tokens for user", amount);
         Ok(())
     }
+
+    pub fn merge_tokens(ctx: Context<MergeTokens>, market_id: u32, amount: u64) -> Result<()> {
+        let market = &mut ctx.accounts.market;
+
+        require!(amount > 0, PredictionMarketError::InvalidAmount);
+        require!(
+            Clock::get()?.unix_timestamp < market.settlement_deadline,
+            PredictionMarketError::MarketExpired
+        );
+        require!(
+            !market.is_settled,
+            PredictionMarketError::MarketAlreadySettled
+        );
+
+        token::burn(
+            CpiContext::new(
+                ctx.accounts.token_program.to_account_info(),
+                Burn {
+                    mint: ctx.accounts.outcome_a_mint.to_account_info(),
+                    from: ctx.accounts.user_outcome_a.to_account_info(),
+                    authority: ctx.accounts.user.to_account_info(),
+                },
+            ),
+            amount,
+        );
+        token::burn(
+            CpiContext::new(
+                ctx.accounts.token_program.to_account_info(),
+                Burn {
+                    mint: ctx.accounts.outcome_b_mint.to_account_info(),
+                    from: ctx.accounts.user_outcome_b.to_account_info(),
+                    authority: ctx.accounts.user.to_account_info(),
+                },
+            ),
+            amount,
+        );
+
+        let market_id_bytes = market.market_id.to_le_bytes();
+        let seeds = &[b"market", market_id_bytes.as_ref(), &[market.bump]];
+
+        token::transfer(
+            CpiContext::new_with_signer(
+                ctx.accounts.token_program.to_account_info(),
+                Transfer {
+                    from: ctx.accounts.collateral_vault.to_account_info(),
+                    to: ctx.accounts.user_collateral.to_account_info(),
+                    authority: market.to_account_info(),
+                },
+                &[seeds],
+            ),
+            amount,
+        );
+
+        market.total_collateral_locked = market
+            .total_collateral_locked
+            .checked_sub(amount)
+            .ok_or(PredictionMarketError::MathOverflow)?;
+
+        msg!(
+            "Merged {} pairs of outcome tokens back to collateral",
+            amount
+        );
+        Ok(())
+    }
+
+    pub fn set_winning_side(
+        ctx: Context<SetWinner>,
+        market_id: u32,
+        winning_outcome: WinningOutcome,
+    ) -> Result<()> {
+        let market = &mut ctx.accounts.market;
+
+        require!(
+            Clock::get()?.unix_timestamp < market.settlement_deadline,
+            PredictionMarketError::MarketExpired
+        );
+        require!(
+            !market.is_settled,
+            PredictionMarketError::MarketAlreadySettled
+        );
+
+        market.is_settled = true;
+        // Setting the Winning Outcome
+        market.winning_outcome = Some(winning_outcome);
+
+        // Now we are revoking the Authorities from the market So it's can't print No more A,B Token
+
+        token::set_authority(
+            CpiContext::new(
+                ctx.accounts.token_program.to_account_info(),
+                SetAuthority {
+                    current_authority: market.to_account_info(),
+                    account_or_mint: ctx.accounts.outcome_a_mint.to_account_info(),
+                },
+            ),
+            AuthorityType::MintTokens,
+            None,
+        );
+        
+        token::set_authority(
+            CpiContext::new(
+                ctx.accounts.token_program.to_account_info(),
+                SetAuthority {
+                    current_authority: market.to_account_info(),
+                    account_or_mint: ctx.accounts.outcome_a_mint.to_account_info(),
+                },
+            ),
+            AuthorityType::MintTokens,
+            None,
+        );
+
+
+        msg!("Wining Outcome is Set to be: {:?}",winning_outcome);
+
+
+        Ok(())
+    }
+
+    
 }
