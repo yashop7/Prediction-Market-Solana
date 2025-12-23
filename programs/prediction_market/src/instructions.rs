@@ -277,6 +277,5 @@ pub struct ClaimRewards <'info>{
     )]
     pub user_outcome_b: Account<'info, TokenAccount>,
     
-    pub token_program: Program<'info, Token>,
- 
+    pub token_program: Program<'info, Token>
 }

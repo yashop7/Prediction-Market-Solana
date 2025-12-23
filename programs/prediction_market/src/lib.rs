@@ -204,7 +204,7 @@ pub mod prediction_market {
         // Setting the Winning Outcome
         market.winning_outcome = Some(winning_outcome);
 
-        // Now we are revoking the Authorities from the market So it's can't print No more A,B Token
+        // Now we are revoking the Authorities from the market to mint more Tokens A or B
 
         token::set_authority(
             CpiContext::new(
@@ -217,7 +217,7 @@ pub mod prediction_market {
             AuthorityType::MintTokens,
             None,
         );
-        
+
         token::set_authority(
             CpiContext::new(
                 ctx.accounts.token_program.to_account_info(),
@@ -230,12 +230,72 @@ pub mod prediction_market {
             None,
         );
 
-
-        msg!("Wining Outcome is Set to be: {:?}",winning_outcome);
-
+        msg!("Wining Outcome is Set to be: {:?}", winning_outcome);
 
         Ok(())
     }
 
-    
+    pub fn claim_rewards(ctx: Context<ClaimRewards>, market_id: u32) -> Result<()> {
+        let market = &mut ctx.accounts.market;
+
+        require!(market.is_settled, PredictionMarketError::MarketNotSettled);
+
+        let winner = market
+            .winning_outcome
+            .ok_or_else(|| PredictionMarketError::WinningOutcomeNotSet)?;
+
+        let (winner_user_ata, winner_mint) = match winner {
+            WinningOutcome::OutcomeA => (
+                &ctx.accounts.user_outcome_a,
+                ctx.accounts.outcome_a_mint.to_account_info(),
+            ),
+            _ => (
+                &ctx.accounts.user_outcome_b,
+                ctx.accounts.outcome_b_mint.to_account_info(),
+            ),
+        };
+
+        // now we will burn the Tokens of Other user
+
+        let amount = winner_user_ata.amount;
+
+        token::burn(
+            CpiContext::new(
+                ctx.accounts.token_program.to_account_info(),
+                Burn {
+                    mint: winner_mint,
+                    from: winner_user_ata.to_account_info(),
+                    authority: market.to_account_info(),
+                },
+            ),
+            amount,
+        );
+
+        // Now we will transfer collateral tokens from the vault to the user
+
+        let market_id_bytes = market.market_id.to_be_bytes();
+        let signer = &[b"market", market_id_bytes.as_ref(), &[market.bump]];
+
+        token::transfer(
+            CpiContext::new_with_signer(
+                ctx.accounts.token_program.to_account_info(),
+                Transfer {
+                    from: ctx.accounts.collateral_vault.to_account_info(),
+                    to: ctx.accounts.user_collateral.to_account_info(),
+                    authority: market.to_account_info(),
+                },
+                &[signer],
+            ),
+            amount,
+        );
+
+        market.total_collateral_locked = market
+            .total_collateral_locked
+            .checked_sub(amount)
+            .ok_or(PredictionMarketError::MathOverflow)?;
+
+        msg!("Claimed Awards by user {}", amount);
+
+        Ok(())
+    }
 }
