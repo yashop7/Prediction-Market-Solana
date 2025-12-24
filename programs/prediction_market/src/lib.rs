@@ -17,6 +17,7 @@ declare_id!("BnhQSbprbPZoruJ2WG6YwBDGNgjLg2DhcsHKvwwFa16P");
 pub mod prediction_market {
     use std::{collections::btree_set::Difference, marker};
 
+    use anchor_lang::accounts::signer;
     use anchor_spl::token;
 
     use super::*;
@@ -85,7 +86,7 @@ pub mod prediction_market {
                 ctx.accounts.token_program.to_account_info(),
                 MintTo {
                     mint: ctx.accounts.outcome_a_mint.to_account_info(),
-                    to: ctx.accounts.user.to_account_info(),
+                    to: ctx.accounts.user_outcome_a.to_account_info(),
                     authority: market.to_account_info(),
                 },
                 &[seeds],
@@ -99,7 +100,7 @@ pub mod prediction_market {
                 ctx.accounts.token_program.to_account_info(),
                 MintTo {
                     mint: ctx.accounts.outcome_b_mint.to_account_info(),
-                    to: ctx.accounts.user.to_account_info(),
+                    to: ctx.accounts.user_outcome_b.to_account_info(),
                     authority: market.to_account_info(),
                 },
                 &[seeds],
@@ -120,10 +121,9 @@ pub mod prediction_market {
         Ok(())
     }
 
-    pub fn merge_tokens(ctx: Context<MergeTokens>, market_id: u32, amount: u64) -> Result<()> {
+    pub fn merge_tokens(ctx: Context<MergeTokens>, market_id: u32) -> Result<()> {
         let market = &mut ctx.accounts.market;
 
-        require!(amount > 0, PredictionMarketError::InvalidAmount);
         require!(
             Clock::get()?.unix_timestamp < market.settlement_deadline,
             PredictionMarketError::MarketExpired
@@ -132,6 +132,13 @@ pub mod prediction_market {
             !market.is_settled,
             PredictionMarketError::MarketAlreadySettled
         );
+
+        let balA = ctx.accounts.user_outcome_a.amount;
+        let balB = ctx.accounts.user_outcome_b.amount;
+
+        let amount = balA.min(balB);
+
+        require!(amount > 0, PredictionMarketError::InvalidAmount);
 
         token::burn(
             CpiContext::new(
@@ -206,29 +213,34 @@ pub mod prediction_market {
 
         // Now we are revoking the Authorities from the market to mint more Tokens A or B
 
-        token::set_authority(
-            CpiContext::new(
-                ctx.accounts.token_program.to_account_info(),
-                SetAuthority {
-                    current_authority: market.to_account_info(),
-                    account_or_mint: ctx.accounts.outcome_a_mint.to_account_info(),
-                },
-            ),
-            AuthorityType::MintTokens,
-            None,
-        );
+        let market_id_bytes = market.market_id.to_le_bytes();
+        let seeds = &[b"market", market_id_bytes.as_ref(), &[market.bump]];
 
         token::set_authority(
-            CpiContext::new(
+            CpiContext::new_with_signer(
                 ctx.accounts.token_program.to_account_info(),
                 SetAuthority {
                     current_authority: market.to_account_info(),
                     account_or_mint: ctx.accounts.outcome_a_mint.to_account_info(),
                 },
+                &[seeds],
             ),
             AuthorityType::MintTokens,
             None,
-        );
+        )?;
+
+        token::set_authority(
+            CpiContext::new_with_signer(
+                ctx.accounts.token_program.to_account_info(),
+                SetAuthority {
+                    current_authority: market.to_account_info(),
+                    account_or_mint: ctx.accounts.outcome_b_mint.to_account_info(),
+                },
+                &[seeds],
+            ),
+            AuthorityType::MintTokens,
+            None,
+        )?;
 
         msg!("Wining Outcome is Set to be: {:?}", winning_outcome);
 
@@ -259,21 +271,22 @@ pub mod prediction_market {
 
         let amount = winner_user_ata.amount;
 
+        // Burning Winnning Tokens
         token::burn(
             CpiContext::new(
                 ctx.accounts.token_program.to_account_info(),
                 Burn {
                     mint: winner_mint,
                     from: winner_user_ata.to_account_info(),
-                    authority: market.to_account_info(),
+                    authority: ctx.accounts.user.to_account_info(),
                 },
             ),
             amount,
-        );
+        )?;
 
         // Now we will transfer collateral tokens from the vault to the user
 
-        let market_id_bytes = market.market_id.to_be_bytes();
+        let market_id_bytes = market.market_id.to_le_bytes();
         let signer = &[b"market", market_id_bytes.as_ref(), &[market.bump]];
 
         token::transfer(
@@ -287,7 +300,7 @@ pub mod prediction_market {
                 &[signer],
             ),
             amount,
-        );
+        )?;
 
         market.total_collateral_locked = market
             .total_collateral_locked
