@@ -25,3 +25,4 @@ pub struct Market {
     // That Meta URL data consists of market image, Name , kind of like an object 
     // put some max lenght on that metadata_url
 }
+

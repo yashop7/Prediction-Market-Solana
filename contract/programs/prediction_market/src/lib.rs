@@ -27,7 +27,7 @@ pub mod prediction_market {
         market_id: u32,
         settlement_deadline: i64,
     ) -> Result<()> {
-        let market = &mut ctx.accounts.market;
+        let market: &mut Account<'_, Market> = &mut ctx.accounts.market;
 
         require!(
             settlement_deadline > Clock::get()?.unix_timestamp,
