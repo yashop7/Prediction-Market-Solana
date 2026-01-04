@@ -6,6 +6,7 @@ use anchor_spl::token::{
 pub mod error;
 pub mod instructions;
 pub mod state;
+pub mod constants;
 
 use error::PredictionMarketError;
 use instructions::*;
@@ -15,9 +16,6 @@ declare_id!("BnhQSbprbPZoruJ2WG6YwBDGNgjLg2DhcsHKvwwFa16P");
 
 #[program]
 pub mod prediction_market {
-    use std::{collections::btree_set::Difference, marker};
-
-    use anchor_lang::accounts::signer;
     use anchor_spl::token;
 
     use super::*;
@@ -28,7 +26,6 @@ pub mod prediction_market {
         settlement_deadline: i64,
     ) -> Result<()> {
         let market: &mut Account<'_, Market> = &mut ctx.accounts.market;
-
         require!(
             settlement_deadline > Clock::get()?.unix_timestamp,
             PredictionMarketError::InvalidSettlementDeadline
@@ -38,12 +35,22 @@ pub mod prediction_market {
         market.settlement_deadline = settlement_deadline;
         market.collateral_mint = ctx.accounts.collateral_mint.key();
         market.collateral_vault = ctx.accounts.collateral_vault.key();
-        market.outcome_a_mint = ctx.accounts.outcome_a_mint.key();
-        market.outcome_b_mint = ctx.accounts.outcome_b_mint.key();
+        market.outcome_yes_mint = ctx.accounts.outcome_yes_mint.key();
+        market.outcome_no_mint = ctx.accounts.outcome_no_mint.key();
         market.is_settled = false;
         market.winning_outcome = None;
         market.total_collateral_locked = 0;
         market.bump = ctx.bumps.market;
+
+        let orderbook = &mut ctx.accounts.orderbook;
+        orderbook.bump = ctx.bumps.orderbook;
+        orderbook.market_id = market_id;
+        orderbook.next_order_id = 0;
+        orderbook.yes_buy_orders = Vec::new();
+        orderbook.yes_sell_orders = Vec::new();
+        orderbook.no_buy_orders = Vec::new();
+        orderbook.no_sell_orders = Vec::new();
+
 
         msg!("Market initialized: {}", market.market_id);
         Ok(())
@@ -85,8 +92,8 @@ pub mod prediction_market {
             CpiContext::new_with_signer(
                 ctx.accounts.token_program.to_account_info(),
                 MintTo {
-                    mint: ctx.accounts.outcome_a_mint.to_account_info(),
-                    to: ctx.accounts.user_outcome_a.to_account_info(),
+                    mint: ctx.accounts.outcome_yes_mint.to_account_info(),
+                    to: ctx.accounts.user_outcome_yes.to_account_info(),
                     authority: market.to_account_info(),
                 },
                 &[seeds],
@@ -99,8 +106,8 @@ pub mod prediction_market {
             CpiContext::new_with_signer(
                 ctx.accounts.token_program.to_account_info(),
                 MintTo {
-                    mint: ctx.accounts.outcome_b_mint.to_account_info(),
-                    to: ctx.accounts.user_outcome_b.to_account_info(),
+                    mint: ctx.accounts.outcome_no_mint.to_account_info(),
+                    to: ctx.accounts.user_outcome_no.to_account_info(),
                     authority: market.to_account_info(),
                 },
                 &[seeds],
@@ -133,8 +140,8 @@ pub mod prediction_market {
             PredictionMarketError::MarketAlreadySettled
         );
 
-        let balA = ctx.accounts.user_outcome_a.amount;
-        let balB = ctx.accounts.user_outcome_b.amount;
+        let balA = ctx.accounts.user_outcome_yes.amount;
+        let balB = ctx.accounts.user_outcome_no.amount;
 
         let amount = balA.min(balB);
 
@@ -144,8 +151,8 @@ pub mod prediction_market {
             CpiContext::new(
                 ctx.accounts.token_program.to_account_info(),
                 Burn {
-                    mint: ctx.accounts.outcome_a_mint.to_account_info(),
-                    from: ctx.accounts.user_outcome_a.to_account_info(),
+                    mint: ctx.accounts.outcome_yes_mint.to_account_info(),
+                    from: ctx.accounts.user_outcome_yes.to_account_info(),
                     authority: ctx.accounts.user.to_account_info(),
                 },
             ),
@@ -155,8 +162,8 @@ pub mod prediction_market {
             CpiContext::new(
                 ctx.accounts.token_program.to_account_info(),
                 Burn {
-                    mint: ctx.accounts.outcome_b_mint.to_account_info(),
-                    from: ctx.accounts.user_outcome_b.to_account_info(),
+                    mint: ctx.accounts.outcome_no_mint.to_account_info(),
+                    from: ctx.accounts.user_outcome_no.to_account_info(),
                     authority: ctx.accounts.user.to_account_info(),
                 },
             ),
@@ -221,7 +228,7 @@ pub mod prediction_market {
                 ctx.accounts.token_program.to_account_info(),
                 SetAuthority {
                     current_authority: market.to_account_info(),
-                    account_or_mint: ctx.accounts.outcome_a_mint.to_account_info(),
+                    account_or_mint: ctx.accounts.outcome_yes_mint.to_account_info(),
                 },
                 &[seeds],
             ),
@@ -234,7 +241,7 @@ pub mod prediction_market {
                 ctx.accounts.token_program.to_account_info(),
                 SetAuthority {
                     current_authority: market.to_account_info(),
-                    account_or_mint: ctx.accounts.outcome_b_mint.to_account_info(),
+                    account_or_mint: ctx.accounts.outcome_no_mint.to_account_info(),
                 },
                 &[seeds],
             ),
@@ -248,7 +255,7 @@ pub mod prediction_market {
     }
 
     pub fn claim_rewards(ctx: Context<ClaimRewards>, market_id: u32) -> Result<()> {
-        let market = &mut ctx.accounts.market;
+        let market: &mut Account<'_, Market> = &mut ctx.accounts.market;
 
         require!(market.is_settled, PredictionMarketError::MarketNotSettled);
 
@@ -258,12 +265,12 @@ pub mod prediction_market {
 
         let (winner_user_ata, winner_mint) = match winner {
             WinningOutcome::OutcomeA => (
-                &ctx.accounts.user_outcome_a,
-                ctx.accounts.outcome_a_mint.to_account_info(),
+                &ctx.accounts.user_outcome_yes,
+                ctx.accounts.outcome_yes_mint.to_account_info(),
             ),
             _ => (
-                &ctx.accounts.user_outcome_b,
-                ctx.accounts.outcome_b_mint.to_account_info(),
+                &ctx.accounts.user_outcome_no,
+                ctx.accounts.outcome_no_mint.to_account_info(),
             ),
         };
 
@@ -311,4 +318,6 @@ pub mod prediction_market {
 
         Ok(())
     }
+
+   
 }

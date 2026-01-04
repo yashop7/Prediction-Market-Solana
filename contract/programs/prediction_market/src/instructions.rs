@@ -1,6 +1,7 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token::{Token, TokenAccount, Mint};
-use crate::state::Market;
+use crate::state::{Market, OrderBook};
+use crate::constants::*;
 
 
 
@@ -11,7 +12,7 @@ pub struct InitializeMarket<'info> {
         init,
         payer = authority,
         space = 8 + Market::INIT_SPACE,
-        seeds = [b"market", market_id.to_le_bytes().as_ref()],
+        seeds = [MARKET_SEED, market_id.to_le_bytes().as_ref()],
         bump
     )]
     pub market: Account<'info, Market>,
@@ -26,7 +27,7 @@ pub struct InitializeMarket<'info> {
         payer = authority,
         token::mint = collateral_mint,
         token::authority = market,
-        seeds = [b"vault",market_id.to_le_bytes().as_ref()],
+        seeds = [VAULT_SEED, market_id.to_le_bytes().as_ref()],
         bump
     )]
     pub collateral_vault: Account<'info, TokenAccount>,
@@ -35,19 +36,29 @@ pub struct InitializeMarket<'info> {
         payer = authority,
         mint::decimals = 6,
         mint::authority = market,
-        seeds = [b"outcome_a",market_id.to_le_bytes().as_ref()],
+        seeds = [OUTCOME_YES_SEED, market_id.to_le_bytes().as_ref()],
         bump
     )]
-    pub outcome_a_mint: Account<'info, Mint>,
+    pub outcome_yes_mint: Account<'info, Mint>,
     #[account(
         init,
         payer = authority,
         mint::decimals = 6,
         mint::authority = market,
-        seeds = [b"outcome_b",market_id.to_le_bytes().as_ref()],
+        seeds = [OUTCOME_NO_SEED, market_id.to_le_bytes().as_ref()],
         bump
     )]
-    pub outcome_b_mint: Account<'info, Mint>,
+    pub outcome_no_mint: Account<'info, Mint>,
+
+    #[account(
+        init,
+        payer = authority,
+        seeds = [ORDERBOOK_SEED, market_id.to_le_bytes().as_ref()],
+        space = OrderBook::space(0), // Start with 0 orders, will realloc as needed
+        bump
+    )]
+    pub orderbook : Account<'info, OrderBook>,
+
 
     pub system_program: Program<'info, System>,
     pub token_program: Program<'info, Token>,
@@ -56,10 +67,10 @@ pub struct InitializeMarket<'info> {
 
 // IN THIS ACCOUNT WE WILL NEED
 /**
- * user_outcome_a => Token Account A of user
- * user_outcome_b => Token Account B of user
- * outcome_a_mint
- * outcome_b_mint
+ * user_outcome_yes => Token Account A of user
+ * user_outcome_no => Token Account B of user
+ * outcome_yes_mint
+ * outcome_no_mint
  * Collateral_mint ==> No need we will read this from market
  * Collateral_vault
  * Token program
@@ -84,7 +95,7 @@ pub struct InitializeMarket<'info> {
 pub struct SplitToken<'info> {
     #[account(
         mut,
-        seeds = [b"market", market.market_id.to_le_bytes().as_ref()],
+        seeds = [MARKET_SEED, market.market_id.to_le_bytes().as_ref()],
         bump = market.bump,
         constraint = market.market_id == market_id
     )]
@@ -105,33 +116,33 @@ pub struct SplitToken<'info> {
 
     #[account(
         mut,
-        constraint = collateral_vault.key() == market.collateral_vault
+        constraint = collateral_vault.key() == market.collateral_vault // We can also used the .owner of vault to verify it's authority of market
     )]
     pub collateral_vault : Account<'info, TokenAccount>,
 
     #[account(
         mut,
-        constraint = outcome_a_mint.key() == market.outcome_a_mint
+        constraint = outcome_yes_mint.key() == market.outcome_yes_mint
     )]
-    pub outcome_a_mint : Account<'info,Mint>,
+    pub outcome_yes_mint : Account<'info,Mint>,
     #[account(
         mut,
-        constraint = outcome_b_mint.key() == market.outcome_b_mint
+        constraint = outcome_no_mint.key() == market.outcome_no_mint
     )]
-    pub outcome_b_mint : Account<'info,Mint>,
+    pub outcome_no_mint : Account<'info,Mint>,
     #[account(
         mut,
-        constraint = user_outcome_a.owner == user.key(),
-        constraint = user_outcome_a.mint == market.outcome_a_mint
+        constraint = user_outcome_yes.owner == user.key(),
+        constraint = user_outcome_yes.mint == market.outcome_yes_mint
     )]
-    pub user_outcome_a : Account<'info, TokenAccount>, // Ohh we willn't make this account here,
+    pub user_outcome_yes : Account<'info, TokenAccount>, // Ohh we willn't make this account here,
     // we will just check it here , Like is it legit or not
     #[account(
         mut,
-        constraint = user_outcome_b.owner == user.key(),
-        constraint = user_outcome_b.mint == market.outcome_b_mint
+        constraint = user_outcome_no.owner == user.key(),
+        constraint = user_outcome_no.mint == market.outcome_no_mint
     )]
-    pub user_outcome_b : Account<'info, TokenAccount>,
+    pub user_outcome_no : Account<'info, TokenAccount>,
     pub token_program : Program<'info,Token>,
 }
 
@@ -140,7 +151,7 @@ pub struct SplitToken<'info> {
 pub struct MergeTokens<'info>{
     #[account(
         mut,
-        seeds = [b"market", market.market_id.to_le_bytes().as_ref()],
+        seeds = [MARKET_SEED, market.market_id.to_le_bytes().as_ref()],
         bump = market.bump,
         constraint = market.market_id == market_id
     )]
@@ -158,36 +169,36 @@ pub struct MergeTokens<'info>{
 
     #[account(
         mut,
-        constraint = collateral_vault.key() == market.collateral_vault
+        constraint = collateral_vault.key() == market.collateral_vault // We can also used the .owner of vault to verify it's authority of market
     )]
-    pub collateral_vault : Account<'info,TokenAccount>,
+    pub collateral_vault : Account<'info, TokenAccount>,
 
     #[account(
         mut,
-        constraint = outcome_a_mint.key() == market.outcome_a_mint
+        constraint = outcome_yes_mint.key() == market.outcome_yes_mint
     )]
-    pub outcome_a_mint : Account<'info,Mint>,
+    pub outcome_yes_mint : Account<'info,Mint>,
 
     #[account(
         mut,
-        constraint = outcome_b_mint.key() == market.outcome_b_mint
+        constraint = outcome_no_mint.key() == market.outcome_no_mint
     )]
-    pub outcome_b_mint : Account<'info,Mint>,
+    pub outcome_no_mint : Account<'info,Mint>,
 
     #[account(
         mut,
-        constraint = user_outcome_a.owner == user.key(),
-        constraint = user_outcome_a.mint == market.outcome_a_mint
+        constraint = user_outcome_yes.owner == user.key(),
+        constraint = user_outcome_yes.mint == market.outcome_yes_mint
     )]
-    pub user_outcome_a : Account<'info, TokenAccount>, // Ohh we willn't make this account here,
+    pub user_outcome_yes : Account<'info, TokenAccount>, // Ohh we willn't make this account here,
     // we will just check it here , Like is it legit or not
 
     #[account(
         mut,
-        constraint = user_outcome_b.owner == user.key(),
-        constraint = user_outcome_b.mint == market.outcome_b_mint
+        constraint = user_outcome_no.owner == user.key(),
+        constraint = user_outcome_no.mint == market.outcome_no_mint
     )]
-    pub user_outcome_b : Account<'info, TokenAccount>,
+    pub user_outcome_no : Account<'info, TokenAccount>,
     pub token_program : Program<'info,Token>
 }
 
@@ -202,7 +213,7 @@ pub struct SetWinner <'info>{
 
     #[account(
         mut,
-        seeds = [b"market", market.market_id.to_le_bytes().as_ref()],
+        seeds = [MARKET_SEED, market.market_id.to_le_bytes().as_ref()],
         bump = market.bump,
         constraint = market.market_id == market_id
     )]
@@ -210,15 +221,15 @@ pub struct SetWinner <'info>{
 
         #[account(
         mut,
-        constraint = outcome_a_mint.key() == market.outcome_a_mint
+        constraint = outcome_yes_mint.key() == market.outcome_yes_mint
     )]
-    pub outcome_a_mint : Account<'info,Mint>,
+    pub outcome_yes_mint : Account<'info,Mint>,
 
     #[account(
         mut,
-        constraint = outcome_b_mint.key() == market.outcome_b_mint
+        constraint = outcome_no_mint.key() == market.outcome_no_mint
     )]
-    pub outcome_b_mint : Account<'info,Mint>,
+    pub outcome_no_mint : Account<'info,Mint>,
     pub token_program : Program<'info,Token>
     
 }
@@ -232,7 +243,7 @@ pub struct ClaimRewards <'info>{
     pub user: Signer<'info>,
     #[account(
         mut,
-        seeds = [b"market", market.market_id.to_le_bytes().as_ref()],
+        seeds = [MARKET_SEED, market.market_id.to_le_bytes().as_ref()],
         bump = market.bump,
         constraint = market.market_id == market_id
     )]
@@ -247,35 +258,35 @@ pub struct ClaimRewards <'info>{
     
     #[account(
         mut,
-        constraint = collateral_vault.key() == market.collateral_vault
+        constraint = collateral_vault.key() == market.collateral_vault // We can also used the .owner of vault to verify it's authority of market
     )]
     pub collateral_vault: Account<'info, TokenAccount>,
      
     #[account(
         mut,
-        constraint = outcome_a_mint.key() == market.outcome_a_mint
+        constraint = outcome_yes_mint.key() == market.outcome_yes_mint
     )]
-    pub outcome_a_mint: Account<'info, Mint>,
+    pub outcome_yes_mint: Account<'info, Mint>,
     
     #[account(
         mut,
-        constraint = outcome_b_mint.key() == market.outcome_b_mint
+        constraint = outcome_no_mint.key() == market.outcome_no_mint
     )]
-    pub outcome_b_mint: Account<'info, Mint>,
+    pub outcome_no_mint: Account<'info, Mint>,
     
     #[account(
         mut,
-        constraint = user_outcome_a.mint == market.outcome_a_mint,
-        constraint = user_outcome_a.owner == user.key()
+        constraint = user_outcome_yes.mint == market.outcome_yes_mint,
+        constraint = user_outcome_yes.owner == user.key()
     )]
-    pub user_outcome_a: Account<'info, TokenAccount>,
+    pub user_outcome_yes: Account<'info, TokenAccount>,
     
     #[account(
         mut,
-        constraint = user_outcome_b.mint == market.outcome_b_mint,
-        constraint = user_outcome_b.owner == user.key()
+        constraint = user_outcome_no.mint == market.outcome_no_mint,
+        constraint = user_outcome_no.owner == user.key()
     )]
-    pub user_outcome_b: Account<'info, TokenAccount>,
+    pub user_outcome_no: Account<'info, TokenAccount>,
     
     pub token_program: Program<'info, Token>
 }

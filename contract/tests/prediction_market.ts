@@ -32,14 +32,15 @@ describe("prediction_market", () => {
   // Mints and Accounts
   let collateralMint: PublicKey;
   let collateralVault: PublicKey;
-  let outcomeAMint: PublicKey;
-  let outcomeBMint: PublicKey;
+  let outcomeYesMint: PublicKey;
+  let outcomeNoMint: PublicKey;
   let marketPda: PublicKey;
+  let orderbook: PublicKey;
 
   // User Account
   let userCollateralAccount: PublicKey;
-  let userOutcomeAAccount: PublicKey;
-  let userOutcomeBAccount: PublicKey;
+  let userOutcomeYesAccount: PublicKey;
+  let userOutcomeNoAccount: PublicKey;
 
   let marketId = 1;
   const initialCollateralAmount = 10000000;
@@ -81,14 +82,18 @@ describe("prediction_market", () => {
         [Buffer.from("vault"), marketIdLE],
         program.programId
       );
-      [outcomeAMint] = PublicKey.findProgramAddressSync(
+      [outcomeYesMint] = PublicKey.findProgramAddressSync(
         [Buffer.from("outcome_a"), marketIdLE],
         program.programId
       );
-      [outcomeBMint] = PublicKey.findProgramAddressSync(
+      [outcomeNoMint] = PublicKey.findProgramAddressSync(
         [Buffer.from("outcome_b"), marketIdLE],
         program.programId
       );
+      [orderbook] = PublicKey.findProgramAddressSync(
+        [Buffer.from("orderbook"), marketIdLE],
+        program.programId
+      )
 
       // Now you can see all the accounts needed for initializeMarket!
       await program.methods
@@ -98,8 +103,9 @@ describe("prediction_market", () => {
           authority: authority.publicKey,
           collateralMint: collateralMint,
           collateralVault,
-          outcomeAMint,
-          outcomeBMint,
+          outcomeYesMint,
+          outcomeNoMint,
+          orderbook,
           systemProgram: SystemProgram.programId,
           tokenProgram: TOKEN_PROGRAM_ID,
           rent: anchor.web3.SYSVAR_RENT_PUBKEY,
@@ -137,18 +143,18 @@ describe("prediction_market", () => {
       let outcomeAAccountInfo = await getOrCreateAssociatedTokenAccount(
         provider.connection,
         authority.payer,
-        outcomeAMint,
+        outcomeYesMint,
         user.publicKey
       );
-      userOutcomeAAccount = outcomeAAccountInfo.address;
+      userOutcomeYesAccount = outcomeAAccountInfo.address;
 
       let outcomeBAccountInfo = await getOrCreateAssociatedTokenAccount(
         provider.connection,
         authority.payer,
-        outcomeBMint,
+        outcomeNoMint,
         user.publicKey
       );
-      userOutcomeBAccount = outcomeBAccountInfo.address;
+      userOutcomeNoAccount = outcomeBAccountInfo.address;
 
       console.log(
         "Now we have funded the User Collateral,Outcome Accounts & Also funded his Collateral Account"
@@ -170,10 +176,10 @@ describe("prediction_market", () => {
           user: user.publicKey,
           userCollateral: userCollateralAccount,
           collateralVault,
-          outcomeAMint,
-          outcomeBMint,
-          userOutcomeA: userOutcomeAAccount,
-          userOutcomeB: userOutcomeBAccount,
+          outcomeYesMint,
+          outcomeNoMint,
+          userOutcomeYes: userOutcomeYesAccount,
+          userOutcomeNo: userOutcomeNoAccount,
         })
         .signers([user])
         .rpc();
@@ -188,11 +194,11 @@ describe("prediction_market", () => {
       //Getting the Outcome Account
       let outcomeAAccount = await getAccount(
         provider.connection,
-        userOutcomeAAccount
+        userOutcomeYesAccount
       );
       let outcomeBAccount = await getAccount(
         provider.connection,
-        userOutcomeBAccount
+        userOutcomeNoAccount
       );
       let vault = await getAccount(provider.connection, collateralVault);
       assert.equal(Number(outcomeAAccount.amount), splitAmount);
@@ -220,10 +226,10 @@ describe("prediction_market", () => {
             user: user.publicKey,
             userCollateral: userCollateralAccount,
             collateralVault,
-            outcomeAMint,
-            outcomeBMint,
-            userOutcomeA: userOutcomeAAccount,
-            userOutcomeB: userOutcomeBAccount,
+            outcomeYesMint,
+            outcomeNoMint,
+            userOutcomeYes: userOutcomeYesAccount,
+            userOutcomeNo: userOutcomeNoAccount,
           })
           .signers([user])
           .rpc();
@@ -239,13 +245,13 @@ describe("prediction_market", () => {
   describe("Merge Tokens", () => {
     // Now we will merge token
     it("Merges outcome tokens back to collateral", async () => {
-      let userOutcomeAAccountInfoBefore = await getAccount(
+      let userOutcomeYesAccountInfoBefore = await getAccount(
         provider.connection,
-        userOutcomeAAccount
+        userOutcomeYesAccount
       );
-      let userOutcomeBAccountInfoBefore = await getAccount(
+      let userOutcomeNoAccountInfoBefore = await getAccount(
         provider.connection,
-        userOutcomeBAccount
+        userOutcomeNoAccount
       );
       let userCollateralAccountInfoBefore = await getAccount(
         provider.connection,
@@ -257,10 +263,10 @@ describe("prediction_market", () => {
         .accounts({
           market: marketPda,
           user: user.publicKey,
-          outcomeAMint,
-          outcomeBMint,
-          userOutcomeA: userOutcomeAAccount,
-          userOutcomeB: userOutcomeBAccount,
+          outcomeYesMint,
+          outcomeNoMint,
+          userOutcomeYes: userOutcomeYesAccount,
+          userOutcomeNo: userOutcomeNoAccount,
           userCollateral: userCollateralAccount,
           collateralVault,
         })
@@ -270,17 +276,17 @@ describe("prediction_market", () => {
       console.log("merge Token is called");
 
       let mergeAmount = Math.min(
-        Number(userOutcomeAAccountInfoBefore.amount),
-        Number(userOutcomeBAccountInfoBefore.amount)
+        Number(userOutcomeYesAccountInfoBefore.amount),
+        Number(userOutcomeNoAccountInfoBefore.amount)
       );
 
-      let userOutcomeAAccountInfoAfter = await getAccount(
+      let userOutcomeYesAccountInfoAfter = await getAccount(
         provider.connection,
-        userOutcomeAAccount
+        userOutcomeYesAccount
       );
-      let userOutcomeBAccountInfoAfter = await getAccount(
+      let userOutcomeNoAccountInfoAfter = await getAccount(
         provider.connection,
-        userOutcomeBAccount
+        userOutcomeNoAccount
       );
       let userCollateralAccountInfoAfter = await getAccount(
         provider.connection,
@@ -288,13 +294,13 @@ describe("prediction_market", () => {
       );
 
       assert.equal(
-        Number(userOutcomeAAccountInfoBefore.amount) -
-          Number(userOutcomeAAccountInfoAfter.amount),
+        Number(userOutcomeYesAccountInfoBefore.amount) -
+          Number(userOutcomeYesAccountInfoAfter.amount),
         mergeAmount
       );
       assert.equal(
-        Number(userOutcomeBAccountInfoBefore.amount) -
-          Number(userOutcomeBAccountInfoAfter.amount),
+        Number(userOutcomeNoAccountInfoBefore.amount) -
+          Number(userOutcomeNoAccountInfoAfter.amount),
         mergeAmount
       );
       assert.equal(
@@ -315,10 +321,10 @@ describe("prediction_market", () => {
         program.methods.mergeTokens(marketId).accounts({
           market: marketPda,
           user: user.publicKey,
-          outcomeAMint,
-          outcomeBMint,
-          userOutcomeA: userOutcomeAAccount,
-          userOutcomeB: userOutcomeBAccount,
+          outcomeYesMint,
+          outcomeNoMint,
+          userOutcomeYes: userOutcomeYesAccount,
+          userOutcomeNo: userOutcomeNoAccount,
           userCollateral: userCollateralAccount,
           collateralVault,
         });
@@ -334,8 +340,8 @@ describe("prediction_market", () => {
     //Defining accounts of user & then funding them
     let winningUser: Keypair;
     let winnerCollateralAcount: PublicKey;
-    let winnerOutcomeAAccount: PublicKey;
-    let winnerOutcomeBAccount: PublicKey;
+    let winnerOutcomeYesAccount: PublicKey;
+    let winnerOutcomeNoAccount: PublicKey;
 
     before(async () => {
       winningUser = Keypair.generate();
@@ -363,20 +369,20 @@ describe("prediction_market", () => {
         5000000
       );
 
-      const winnerOutcomeAAccountInfo = await getOrCreateAssociatedTokenAccount(
+      const winnerOutcomeYesAccountInfo = await getOrCreateAssociatedTokenAccount(
         provider.connection,
         authority.payer,
-        outcomeAMint,
+        outcomeYesMint,
         winningUser.publicKey
       );
-      winnerOutcomeAAccount = winnerOutcomeAAccountInfo.address;
-      const winnerOutcomeBAccountInfo = await getOrCreateAssociatedTokenAccount(
+      winnerOutcomeYesAccount = winnerOutcomeYesAccountInfo.address;
+      const winnerOutcomeNoAccountInfo = await getOrCreateAssociatedTokenAccount(
         provider.connection,
         authority.payer,
-        outcomeBMint,
+        outcomeNoMint,
         winningUser.publicKey
       );
-      winnerOutcomeBAccount = winnerOutcomeBAccountInfo.address;
+      winnerOutcomeNoAccount = winnerOutcomeNoAccountInfo.address;
       await program.methods
         .splitTokens(marketId, new BN(3000000))
         .accounts({
@@ -384,10 +390,10 @@ describe("prediction_market", () => {
           user: winningUser.publicKey,
           userCollateral: winnerCollateralAcount,
           collateralVault,
-          outcomeAMint,
-          outcomeBMint,
-          userOutcomeA: winnerOutcomeAAccount,
-          userOutcomeB: winnerOutcomeBAccount,
+          outcomeYesMint,
+          outcomeNoMint,
+          userOutcomeYes: winnerOutcomeYesAccount,
+          userOutcomeNo: winnerOutcomeNoAccount,
         })
         .signers([winningUser])
         .rpc();
@@ -399,8 +405,8 @@ describe("prediction_market", () => {
         .accounts({
           authority: authority.publicKey,
           market: marketPda,
-          outcomeAMint,
-          outcomeBMint,
+          outcomeYesMint,
+          outcomeNoMint,
         })
         .signers([authority.payer])
         .rpc();
@@ -417,8 +423,8 @@ describe("prediction_market", () => {
           .accounts({
             authority: authority.publicKey,
             market: marketPda,
-            outcomeAMint,
-            outcomeBMint,
+            outcomeYesMint,
+            outcomeNoMint,
           })
           .signers([authority.payer])
           .rpc();
@@ -435,7 +441,7 @@ describe("prediction_market", () => {
       );
       let winnerOutcomeABefore = await getAccount(
         provider.connection,
-        winnerOutcomeAAccount
+        winnerOutcomeYesAccount
       );
 
       let rewardAmount = Number(winnerOutcomeABefore.amount);
@@ -447,10 +453,10 @@ describe("prediction_market", () => {
           user: winningUser.publicKey,
           userCollateral: winnerCollateralAcount,
           collateralVault,
-          outcomeAMint,
-          outcomeBMint,
-          userOutcomeA: winnerOutcomeAAccount,
-          userOutcomeB: winnerOutcomeBAccount,
+          outcomeYesMint,
+          outcomeNoMint,
+          userOutcomeYes: winnerOutcomeYesAccount,
+          userOutcomeNo: winnerOutcomeNoAccount,
         })
         .signers([winningUser])
         .rpc();
@@ -461,7 +467,7 @@ describe("prediction_market", () => {
       );
       let winnerOutcomeAAfterClaiming = await getAccount(
         provider.connection,
-        winnerOutcomeAAccount
+        winnerOutcomeYesAccount
       );
 
       //checking the winner collateral Account
@@ -485,10 +491,10 @@ describe("prediction_market", () => {
             user: winningUser.publicKey,
             userCollateral: winnerCollateralAcount,
             collateralVault,
-            outcomeAMint,
-            outcomeBMint,
-            userOutcomeA: winnerOutcomeAAccount,
-            userOutcomeB: winnerOutcomeBAccount,
+            outcomeYesMint,
+            outcomeNoMint,
+            userOutcomeYes: winnerOutcomeYesAccount,
+            userOutcomeNo: winnerOutcomeNoAccount,
           })
           .signers([winningUser])
           .rpc();
@@ -511,10 +517,10 @@ describe("prediction_market", () => {
             user: user.publicKey,
             userCollateral: userCollateralAccount,
             collateralVault,
-            outcomeAMint,
-            outcomeBMint,
-            userOutcomeA: userOutcomeAAccount,
-            userOutcomeB: userOutcomeBAccount,
+            outcomeYesMint,
+            outcomeNoMint,
+            userOutcomeYes: userOutcomeYesAccount,
+            userOutcomeNo: userOutcomeNoAccount,
           })
           .signers([user])
           .rpc();
@@ -533,10 +539,10 @@ describe("prediction_market", () => {
           user: user.publicKey,
           userCollateral: userCollateralAccount,
           collateralVault,
-          outcomeAMint,
-          outcomeBMint,
-          userOutcomeA: userOutcomeAAccount,
-          userOutcomeB: userOutcomeBAccount,
+          outcomeYesMint,
+          outcomeNoMint,
+          userOutcomeYes: userOutcomeYesAccount,
+          userOutcomeNo: userOutcomeNoAccount,
         });
         assert.fail("Failing with this error MarketAlreadySettled");
       } catch (error) {
