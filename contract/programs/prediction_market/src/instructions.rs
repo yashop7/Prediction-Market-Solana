@@ -1,6 +1,6 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token::{Token, TokenAccount, Mint};
-use crate::state::{Market, OrderBook};
+use crate::state::{Market, OrderBook, UserStats};
 use crate::constants::*;
 
 
@@ -143,6 +143,17 @@ pub struct SplitToken<'info> {
         constraint = user_outcome_no.mint == market.outcome_no_mint
     )]
     pub user_outcome_no : Account<'info, TokenAccount>,
+
+    #[account(
+        init_if_needed,
+        payer = user,
+        space = 8 + UserStats::INIT_SPACE,
+        seeds = [USER_STATS_SEED, user.key().as_ref(), market_id.to_le_bytes().as_ref()],
+        bump
+    )]
+    pub user_stats_account : Box<Account<'info, UserStats>>,
+
+    pub system_program: Program<'info, System>,
     pub token_program : Program<'info,Token>,
 }
 
@@ -289,4 +300,66 @@ pub struct ClaimRewards <'info>{
     pub user_outcome_no: Account<'info, TokenAccount>,
     
     pub token_program: Program<'info, Token>
+}
+
+#[derive(Accounts)]
+#[instruction(market_id:u32)]
+pub struct PlaceOrder<'info> {
+    #[account(mut)]
+    pub user : Signer<'info>,
+
+    #[account(
+        mut,
+        seeds=[MARKET_SEED, market.market_id.to_be_bytes().as_ref()],
+        bump = market.bump,
+        constraint = market.market_id == market_id,
+    )]
+    pub market : Box<Account<'info, Market>>,
+
+
+    // Remember this , WE WILL HAVE TO PUT SEEDS IN OUR CUSTOM ACCOUNT
+    #[account(
+        mut,
+        seeds = [ORDERBOOK_SEED ,market.market_id.to_le_bytes().as_ref()],
+        bump = market.bump,
+        constraint = orderbook.market_id == market_id 
+    )]
+    pub orderbook : Box<Account<'info, OrderBook>>,
+
+    #[account(
+        mut,
+        seeds = [USER_STATS_SEED, user.key().as_ref(), market_id.to_le_bytes().as_ref()],
+        bump = user_stats_account.bump
+    )]
+    pub user_stats_account : Box<Account<'info,UserStats>>,
+    // this will exist 100% because When user was given Yes NO token, then we made this account 
+
+    #[account(
+        mut,
+        constraint = outcome_yes_mint.key() == market.outcome_yes_mint
+    )]
+    pub outcome_yes_mint: Account<'info, Mint>,
+    
+    #[account(
+        mut,
+        constraint = outcome_no_mint.key() == market.outcome_no_mint
+    )]
+    pub outcome_no_mint: Account<'info, Mint>,
+
+    #[account(
+        mut,
+        constraint = user_outcome_yes.mint == market.outcome_yes_mint,
+        constraint = user_outcome_yes.owner == user.key()
+    )]
+    pub user_outcome_yes: Account<'info, TokenAccount>,
+    
+    #[account(
+        mut,
+        constraint = user_outcome_no.mint == market.outcome_no_mint,
+        constraint = user_outcome_no.owner == user.key()
+    )]
+    pub user_outcome_no: Account<'info, TokenAccount>,
+
+
+    pub token_program : Program<'info, Token>
 }

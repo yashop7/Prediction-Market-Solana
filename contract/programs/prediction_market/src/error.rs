@@ -10,6 +10,10 @@ pub enum PredictionMarketError {
     MarketExpired,
     #[msg("Invalid amount")]
     InvalidAmount,
+    #[msg("Invalid order quantity")]
+    InvalidOrderQuantity,
+    #[msg("Invalid order price")]
+    InvalidOrderPrice,
     #[msg("Math overflow")]
     MathOverflow,
     #[msg("Invalid wining out come")]
@@ -17,5 +21,5 @@ pub enum PredictionMarketError {
     #[msg("Market is not setteld yet")]
     MarketNotSettled,
      #[msg("Winning outcome is not set yet")]
-    WinningOutcomeNotSet,  
+    WinningOutcomeNotSet
 }

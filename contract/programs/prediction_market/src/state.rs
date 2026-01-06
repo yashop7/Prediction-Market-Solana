@@ -64,9 +64,9 @@ pub struct Order {
     pub user_key : Pubkey,
     pub side : OrderSide,
     pub token_type : TokenType,
-    pub price : u32,
-    pub quantity : u32,
-    pub filledquantity : u32,
+    pub price : u64,
+    pub quantity : u64,
+    pub filledquantity : u64,
     pub timestamp : i64
 
 }

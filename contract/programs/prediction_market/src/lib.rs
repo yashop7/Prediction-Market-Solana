@@ -87,7 +87,7 @@ pub mod prediction_market {
         let market_id_bytes = market.market_id.to_le_bytes();
         let seeds = &[b"market", market_id_bytes.as_ref(), &[market.bump]];
 
-        //Minting Outcome A tokens
+        //Minting Outcome Yes tokens
         token::mint_to(
             CpiContext::new_with_signer(
                 ctx.accounts.token_program.to_account_info(),
@@ -101,7 +101,7 @@ pub mod prediction_market {
             amount,
         );
 
-        //Minting Outcome B tokens
+        //Minting Outcome No tokens
         token::mint_to(
             CpiContext::new_with_signer(
                 ctx.accounts.token_program.to_account_info(),
@@ -119,6 +119,26 @@ pub mod prediction_market {
             .total_collateral_locked
             .checked_add(amount)
             .ok_or(PredictionMarketError::MathOverflow)?;
+
+        let user_stats = &mut ctx.accounts.user_stats_account;
+        
+        if user_stats.user == Pubkey::default() {
+            user_stats.user = ctx.accounts.user.key();
+            user_stats.market_id = market_id;
+            user_stats.total_yes_bought = 0;
+            user_stats.total_yes_sold = 0;
+            user_stats.total_no_bought = 0;
+            user_stats.total_no_sold = 0;
+            user_stats.sol_deposited = 0;
+            user_stats.reward_claimed = false;
+            user_stats.bump = ctx.bumps.user_stats_account;
+        }
+
+        user_stats.sol_deposited = user_stats
+            .sol_deposited
+            .checked_add(amount)
+            .ok_or(PredictionMarketError::MathOverflow)?;
+
         // What ok_or is doing that, we are getting the Some(value) or None from the checked_add
         // ok_or is returning us Result<u64,Err>,
         // .ok_or(error) → converts to Result<u64, Error>:
@@ -173,6 +193,7 @@ pub mod prediction_market {
         let market_id_bytes = market.market_id.to_le_bytes();
         let seeds = &[b"market", market_id_bytes.as_ref(), &[market.bump]];
 
+        // Transfering Collateral Back to user collateral Account
         token::transfer(
             CpiContext::new_with_signer(
                 ctx.accounts.token_program.to_account_info(),
@@ -218,7 +239,7 @@ pub mod prediction_market {
         // Setting the Winning Outcome
         market.winning_outcome = Some(winning_outcome);
 
-        // Now we are revoking the Authorities from the market to mint more Tokens A or B
+        // Now we are revoking the Authorities from the market to mint more Yes/No Tokens
 
         let market_id_bytes = market.market_id.to_le_bytes();
         let seeds = &[b"market", market_id_bytes.as_ref(), &[market.bump]];
@@ -315,6 +336,56 @@ pub mod prediction_market {
             .ok_or(PredictionMarketError::MathOverflow)?;
 
         msg!("Claimed Awards by user {}", amount);
+
+        Ok(())
+    }
+
+
+    pub fn place_order(ctx : Context<PlaceOrder>, side : OrderSide, token_type : TokenType, quantity : u64, price : u64) -> Result<()> {
+        let market = &mut ctx.accounts.market;
+        let orderbook = &mut ctx.accounts.orderbook;
+        
+        require!(
+            Clock::get()?.unix_timestamp < market.settlement_deadline,
+            PredictionMarketError::MarketExpired
+        );
+
+        require!(
+            !market.is_settled,
+            PredictionMarketError::MarketAlreadySettled
+        );
+
+        // He can send us both Collateral Tokens or Yes/No Custom tokens
+
+        let token_mint = Tokentype == market.collateral_mint;
+
+        require!(quantity > 0, PredictionMarketError::InvalidOrderQuantity);
+        // There should be another checks for Lamports, We can't pay less than the minimum decimals of the Token
+        require!(price > 0, PredictionMarketError::InvalidOrderPrice);
+
+
+        let order = Order {
+            id : orderbook.next_order_id,
+            market_id : market.market_id,
+            user_key : ctx.accounts.user.key(),
+            side,
+            token_type,
+            quantity,
+            price,
+            filledquantity : 0,
+            timestamp : Clock::get()?.unix_timestamp
+        };
+
+        // Then we will add the orderbook in one of the vector
+
+
+
+
+        
+
+        orderbook.next_order_id += 1;
+
+        // Increase the ORDERBOOK next order Id
 
         Ok(())
     }
