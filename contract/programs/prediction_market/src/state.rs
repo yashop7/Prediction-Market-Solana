@@ -27,8 +27,6 @@ pub struct Market {
     pub authority: Pubkey,
     pub market_id: u32, // This will be a No.
     pub settlement_deadline: i64,
-    pub outcome_yes_mint: Pubkey, // Type of mint of YES & NO
-    pub outcome_no_mint: Pubkey,
     pub collateral_mint: Pubkey,// Can be USDC.. etc
     pub collateral_vault: Pubkey,
     pub is_settled: bool,
@@ -39,7 +37,11 @@ pub struct Market {
     // That Meta URL data consists of market image, Name , kind of like an object 
     // put some max lenght on that metadata_url
     #[max_len(200)]
-    pub meta_data_url : String
+    pub meta_data_url : String,
+    pub outcome_yes_mint: Pubkey, // Type of mint of YES & NO
+    pub outcome_no_mint: Pubkey,
+    pub yes_escrow : Pubkey, // Escrow Account to store the Yes/No
+    pub no_escrow : Pubkey,
 }
 
 
@@ -48,11 +50,24 @@ pub struct Market {
 pub struct UserStats { // User Account associated with the particular market
     pub user : Pubkey,
     pub market_id : u32,
-    pub total_yes_bought: u64,
-    pub total_yes_sold: u64,
-    pub total_no_bought: u64,
-    pub total_no_sold: u64,
-    pub sol_deposited : u64,
+
+    // pub total_yes_bought: u64,
+    // pub total_yes_sold: u64,
+    // pub total_no_bought: u64,
+    // pub total_no_sold: u64,
+
+    pub claimable_yes: u64,
+    pub locked_yes: u64,
+    // pub free_yes: u64,
+
+    pub claimable_no: u64,
+    pub locked_no: u64,
+    // pub free_no: u64,
+
+    pub claimable_collateral: u64,
+    pub locked_collateral: u64,
+    // pub free_collateral: u64,
+
     pub reward_claimed : bool,
     pub bump : u8
 }

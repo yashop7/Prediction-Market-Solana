@@ -53,6 +53,27 @@ pub struct InitializeMarket<'info> {
     #[account(
         init,
         payer = authority,
+        token::authority = market,
+        token::mint = outcome_yes_mint,
+        seeds = [ESCROW_SEED, market_id.to_le_bytes().as_ref(), outcome_yes_mint.key().as_ref()],
+        bump
+    )]
+    pub yes_escrow: Account<'info, TokenAccount>,
+
+    #[account(
+        init,
+        payer = authority,
+        token::authority = market,
+        token::mint = outcome_no_mint,
+        seeds = [ESCROW_SEED, market_id.to_le_bytes().as_ref(), outcome_no_mint.key().as_ref()],
+        bump
+    )]
+    pub no_escrow: Account<'info, TokenAccount>,
+    
+
+    #[account(
+        init,
+        payer = authority,
         seeds = [ORDERBOOK_SEED, market_id.to_le_bytes().as_ref()],
         space = OrderBook::space(0), // Start with 0 orders, will realloc as needed
         bump
@@ -310,12 +331,11 @@ pub struct PlaceOrder<'info> {
 
     #[account(
         mut,
-        seeds=[MARKET_SEED, market.market_id.to_be_bytes().as_ref()],
+        seeds=[MARKET_SEED, market.market_id.to_le_bytes().as_ref()],
         bump = market.bump,
         constraint = market.market_id == market_id,
     )]
     pub market : Box<Account<'info, Market>>,
-
 
     // Remember this , WE WILL HAVE TO PUT SEEDS IN OUR CUSTOM ACCOUNT
     #[account(
@@ -325,6 +345,19 @@ pub struct PlaceOrder<'info> {
         constraint = orderbook.market_id == market_id 
     )]
     pub orderbook : Box<Account<'info, OrderBook>>,
+
+    #[account(
+        mut,
+        constraint = collateral_vault.key() == market.collateral_vault // We can also used the .owner of vault to verify it's authority of market
+    )]
+    pub collateral_vault : Account<'info, TokenAccount>,
+
+    #[account(
+        mut,
+        constraint = user_collateral.mint == market.collateral_mint,
+        constraint = user_collateral.owner == user.key()
+    )]
+    pub user_collateral : Account<'info, TokenAccount>,
 
     #[account(
         mut,
@@ -360,6 +393,21 @@ pub struct PlaceOrder<'info> {
     )]
     pub user_outcome_no: Account<'info, TokenAccount>,
 
+    #[account(
+        mut,
+        constraint = yes_escrow.mint == market.outcome_yes_mint,
+        constraint = yes_escrow.key() == market.yes_escrow
+    )]
+    pub yes_escrow : Account<'info, TokenAccount>,
 
+    #[account(
+        mut,
+        constraint = no_escrow.mint == market.outcome_no_mint,
+        constraint = no_escrow.key() == market.no_escrow
+    )]
+    pub no_escrow : Account<'info, TokenAccount>,
+
+
+    pub system_program: Program<'info, System>,
     pub token_program : Program<'info, Token>
 }
