@@ -28,4 +28,7 @@ pub enum PredictionMarketError {
     NotEnoughBalance,
     #[msg("Seller's UserStats account not provided in remaining_accounts")]
     SellerStatsAccountNotProvided,
+    #[msg("Buyer's UserStats account not provided in remaining_accounts")]
+    BuyerStatsAccountNotProvided,
+
 }

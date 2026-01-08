@@ -83,7 +83,6 @@ pub struct Order {
     pub quantity : u64,
     pub filledquantity : u64,
     pub timestamp : i64
-
 }
 
 #[account]
