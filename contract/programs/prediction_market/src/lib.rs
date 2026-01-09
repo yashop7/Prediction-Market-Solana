@@ -344,11 +344,12 @@ pub mod prediction_market {
     /// Place an order to buy or sell outcome tokens
     ///
     /// Flow:
-    /// - SELL order: Seller's YES/NO tokens locked in escrow immediately
-    /// - BUY order: Buyer's collateral locked in vault immediately
+    /// - On placing Order
+    ///   - SELL order: Seller's YES/NO tokens locked in escrow immediately
+    ///   - BUY order: Buyer's collateral locked in vault immediately
     /// - When matched:
-    ///   * Buyer's claimable_yes incremented in their UserStats (can claim later)
-    ///   * Seller will withdraw collateral from vault separately
+    ///   - Buyer's claimable_yes incremented in their UserStats (can claim later from dashboard)
+    ///   - Seller will withdraw collateral from vault separately
     pub fn place_order(
         ctx: Context<PlaceOrder>,
         side: OrderSide,
@@ -397,8 +398,9 @@ pub mod prediction_market {
         //Checking if user has enough balance or not
 
         // Lock funds immediately when placing order
+        // For Buyer Lock collateral in Vault
+        // For Seller Locking tokens in Escrow
         if side == OrderSide::Sell {
-            // Seller: Lock YES/NO tokens in escrow
             require!(
                 user_token_account.amount >= quantity,
                 PredictionMarketError::NotEnoughBalance
@@ -416,7 +418,6 @@ pub mod prediction_market {
                 quantity,
             )?;
 
-            // Locking the tokens
             let user_stats = &mut ctx.accounts.user_stats_account;
 
             match token_type {
@@ -434,7 +435,6 @@ pub mod prediction_market {
                 }
             }
         } else {
-            // Buyer: Lock collateral in vault
             require!(
                 ctx.accounts.user_collateral.amount >= amount,
                 PredictionMarketError::NotEnoughBalance
@@ -474,17 +474,6 @@ pub mod prediction_market {
 
         orderbook.next_order_id += 1;
 
-        // Then we will add the orderbook in one of the vector
-        // I have to increase the Space according to new Incoming order
-
-        // Fix: Don't take mutable references to all of them at once to avoid borrow checker error
-        // We will take references only when needed
-
-        // let yes_buy_orders = &mut orderbook.yes_buy_orders;
-        // let yes_sell_orders = &mut orderbook.yes_sell_orders;
-        // let no_buy_orders = &mut orderbook.no_buy_orders;
-        // let no_sell_orders = &mut orderbook.no_sell_orders;
-
         // let order_vec = match (token_type, side) {
         //     (TokenType::Yes, OrderSide::Buy) => yes_buy_orders,
         //     (TokenType::Yes, OrderSide::Sell) => yes_sell_orders,
@@ -498,283 +487,242 @@ pub mod prediction_market {
 
         // order_vec.push(order);
 
-        // Now we will arrange the order in Inc & Dec Amount
-
         let mut idx = 0;
         let mut iteration = 0;
         let mut completed_orders: Vec<Order> = Vec::new();
 
-        if token_type == TokenType::Yes {
-            if order.side == OrderSide::Buy {
-                // We need reference to sell orders to match against
-                let yes_sell_orders = &mut orderbook.yes_sell_orders;
+        // Get the appropriate order vectors based on token type and side
+        let (matching_orders, is_buy_order) = match (token_type, side) {
+            (TokenType::Yes, OrderSide::Buy) => (&mut orderbook.yes_sell_orders, true),
+            (TokenType::Yes, OrderSide::Sell) => (&mut orderbook.yes_buy_orders, false),
+            (TokenType::No, OrderSide::Buy) => (&mut orderbook.no_sell_orders, true),
+            (TokenType::No, OrderSide::Sell) => (&mut orderbook.no_buy_orders, false),
+        };
 
-                while idx < yes_sell_orders.len() && iteration <= max_iteration {
-                    let (book_price, book_qty, book_filled_qty) = {
-                        let order = &yes_sell_orders[idx];
-                        (order.price, order.quantity, order.filledquantity)
-                    };
-                    // Sell order are in Increment Arrangement
-                    if order.price >= book_price {
-                        // Checking how much quantity is remaining to both of user
-                        let buyer_left_qty = order
-                            .quantity
-                            .checked_sub(order.filledquantity)
-                            .ok_or(PredictionMarketError::MathOverflow)?;
-                        let seller_left_qty = book_qty
-                            .checked_sub(book_filled_qty)
-                            .ok_or(PredictionMarketError::MathOverflow)?;
-                        let min_qty = buyer_left_qty.min(seller_left_qty);
+        // Generalized matching logic for both YES and NO tokens
+        while idx < matching_orders.len() && iteration <= max_iteration {
+            let (book_price, book_qty, book_filled_qty) = {
+                let book_order = &matching_orders[idx];
+                (
+                    book_order.price,
+                    book_order.quantity,
+                    book_order.filledquantity,
+                )
+            };
 
-                        if min_qty == 0 {
-                            idx += 1;
-                            continue;
-                        }
+            // Price matching logic:
+            // Buy order willing to pay UP TO price, so match if book price <= our price
+            // Sell order willing to accept DOWN TO price, so match if book price >= our price
+            let price_matches = if is_buy_order {
+                order.price >= book_price // Buyer matches with lower or equal sell prices
+            } else {
+                order.price <= book_price // Seller matches with higher or equal buy prices
+            };
 
-                        // Filling the filled qty
-                        yes_sell_orders[idx].filledquantity = book_filled_qty
-                            .checked_add(min_qty)
-                            .ok_or(PredictionMarketError::MathOverflow)?;
+            if price_matches {
+                // Calculate remaining quantities
+                let our_left_qty = order
+                    .quantity
+                    .checked_sub(order.filledquantity)
+                    .ok_or(PredictionMarketError::MathOverflow)?;
+                let book_left_qty = book_qty
+                    .checked_sub(book_filled_qty)
+                    .ok_or(PredictionMarketError::MathOverflow)?;
+                let min_qty = our_left_qty.min(book_left_qty);
 
-                        order.filledquantity = order
-                            .filledquantity
-                            .checked_add(min_qty)
-                            .ok_or(PredictionMarketError::MathOverflow)?;
-
-                        // Execute the trade:
-                        // 1. Transfer YES tokens: escrow → buyer (current user)
-                        // 2. Transfer collateral: vault → seller (from matched order)
-
-                        let collateral_amount = min_qty
-                            .checked_mul(book_price)
-                            .ok_or(PredictionMarketError::MathOverflow)?;
-
-                        // Locking YN tokens in the Buyer Acocunt
-                        ctx.accounts.user_stats_account.claimable_yes = ctx
-                            .accounts
-                            .user_stats_account
-                            .claimable_yes
-                            .checked_add(min_qty)
-                            .ok_or(PredictionMarketError::MathOverflow)?;
-
-                        // Locking Collateral Tokens in the Sellers account
-                        let seller_pubkey = yes_sell_orders[idx].user_key;
-                        let seller_stats_pda = Pubkey::find_program_address(
-                            &[
-                                b"user_stats",
-                                seller_pubkey.as_ref(),
-                                market.market_id.to_le_bytes().as_ref(),
-                            ],
-                            ctx.program_id,
-                        )
-                        .0;
-
-                        // Find seller's UserStats in remaining_accounts and update claimable_collateral
-                        let mut seller_credited = false;
-                        for account_info in ctx.remaining_accounts.iter() {
-                            if account_info.key == &seller_stats_pda {
-                                let mut data = account_info.try_borrow_mut_data()?;
-                                let mut seller_stats = UserStats::try_deserialize(&mut &data[..])?;
-
-                                seller_stats.claimable_collateral = seller_stats
-                                    .claimable_collateral
-                                    .checked_add(collateral_amount)
-                                    .ok_or(PredictionMarketError::MathOverflow)?;
-
-                                let mut writer = &mut data[..];
-                                seller_stats.try_serialize(&mut writer)?;
-
-                                seller_credited = true;
-                                break;
-                            }
-                        }
-
-                        require!(
-                            seller_credited,
-                            PredictionMarketError::SellerStatsAccountNotProvided
-                        );
-
-                        msg!(
-                            "Trade executed: Buyer +{} claimable YES, Seller +{} claimable collateral",
-                            min_qty,
-                            collateral_amount
-                        );
-
-                        // Mark completed orders for removal
-                        if yes_sell_orders[idx].filledquantity == yes_sell_orders[idx].quantity {
-                            yes_sell_orders.remove(idx);
-                            completed_orders.push(yes_sell_orders[idx].clone());
-                        }
-                        { //Comments
-                             //We will have to add the order in the Completed order, like where it is belong to
-
-                            // Who is minimum among the filled quantity & the amount, we will confirm it
-                            // Now we will decrease the filled qty from the person & we will give the assets from the collateral
-                            // Then we will have to give user the user Tokens from the Yes Escrow
-                            // Then there is also a Task to remove the order from the book whose Filled Qty are equal to the quantity
-                            // Then there is also a chance that orders are not complete// then we will have to put the order in the orderbook, If anthing is not matched
-                            // There are 4 cases
-                            // His order completed at the same time
-                            // His order completed at the same time,(but iteration reached their max) But the order is too big, then it's failing, So then we will either have to use Crank Bot, How to solve this, To Lazily complete the order, WE WILL HAVE TO SEE MORE ON THIS
-                            // His order is Partially filled & rest is added to the orderbook
-                            // His order is ILLOGICAL, so we add the order to the orderbook right away
-
-                            // there is a Buy Order
-
-                            // In that case my money is debited from my account -> Collateral Vault,
-                            // then collateralvault -> Other user Wallet,
-                            // Escrow has yes tokens of that person, yes Escrow => My Yes token account
-
-                            // In Case of Sell orders
-
-                            // I have already given my tokens to the escrow
-                            // What If suddenly order match ?
-                            // Other user yes Escrow => His yes token Account
-                            // I will get his collateral; CollateralVault => Collateral Account
-
-                            // What If not Instant order Succes? Then If anbody comes to Buy
-                            // My order is in Orderbook, My Yes tokens are in escrow
-                            // If order matches later
-                            // Me=> Collateral Vault => My collateral Account
-                            // Other user => Yes escrow => other user escrow Account
-                        }
-
-                        iteration += 1;
-                    } else {
-                        // Breaking the loop if no more orders are there
-                        break;
-                    }
-
+                if min_qty == 0 {
                     idx += 1;
+                    continue;
                 }
 
-                // Now we will have to sort the selling array in the Increment Way
-                yes_sell_orders.sort_by(|a, b| a.price.cmp(&b.price));
-            } else {
-                // Now we are in the business of selling the Shares
-                let yes_buy_orders = &mut orderbook.yes_buy_orders;
+                // Update filled quantities
+                matching_orders[idx].filledquantity = book_filled_qty
+                    .checked_add(min_qty)
+                    .ok_or(PredictionMarketError::MathOverflow)?;
 
-                while idx < yes_buy_orders.len() && iteration <= max_iteration {
-                    let (book_price, book_qty, book_filled_qty) = {
-                        let order = &yes_buy_orders[idx];
-                        (order.price, order.quantity, order.filledquantity)
-                    };
+                order.filledquantity = order
+                    .filledquantity
+                    .checked_add(min_qty)
+                    .ok_or(PredictionMarketError::MathOverflow)?;
 
-                    // Buy Price are in the arrangement in the order of Decrement
-                    // Price => 9,8,7,6
-                    if order.price <= book_price {
-                        // Checking how much quantity is remaining to both of user
-                        let seller_left_qty = order
-                            .quantity
-                            .checked_sub(order.filledquantity)
-                            .ok_or(PredictionMarketError::MathOverflow)?;
-                        let buyer_left_qty = book_qty
-                            .checked_sub(book_filled_qty)
-                            .ok_or(PredictionMarketError::MathOverflow)?;
-                        let min_qty = buyer_left_qty.min(seller_left_qty);
+                let collateral_amount = min_qty
+                    .checked_mul(book_price)
+                    .ok_or(PredictionMarketError::MathOverflow)?;
 
-                        if min_qty == 0 {
-                            idx += 1;
-                            continue;
-                        }
-
-                        // Filling the filled qty
-                        yes_buy_orders[idx].filledquantity =
-                            book_filled_qty
+                // Credit the appropriate user stats based on whether this is a buy or sell order
+                if is_buy_order {
+                    // When user is BUYER - credit YES/NO tokens
+                    match token_type {
+                        TokenType::Yes => {
+                            ctx.accounts.user_stats_account.claimable_yes = ctx
+                                .accounts
+                                .user_stats_account
+                                .claimable_yes
                                 .checked_add(min_qty)
                                 .ok_or(PredictionMarketError::MathOverflow)?;
-
-                        order.filledquantity = order
-                            .filledquantity
-                            .checked_add(min_qty)
-                            .ok_or(PredictionMarketError::MathOverflow)?;
-
-                        // Execute the trade:
-                        // 1. Transfer YES tokens: escrow → buyer (from matched order)
-                        // 2. Transfer collateral: vault → seller (current user)
-
-                        let collateral_amount = min_qty
-                            .checked_mul(book_price)
-                            .ok_or(PredictionMarketError::MathOverflow)?;
-
-                        // Locking Collateral tokens in the Seller Acocunt
-                        ctx.accounts.user_stats_account.claimable_collateral = ctx
-                            .accounts
-                            .user_stats_account
-                            .claimable_collateral
-                            .checked_add(min_qty)
-                            .ok_or(PredictionMarketError::MathOverflow)?;
-
-                        // Locking YN Tokens in the Buyers account
-                        let buyer_pubkey = yes_buy_orders[idx].user_key;
-                        let buyer_stats_pda = Pubkey::find_program_address(
-                            &[
-                                b"user_stats",
-                                buyer_pubkey.as_ref(),
-                                market.market_id.to_le_bytes().as_ref(),
-                            ],
-                            ctx.program_id,
-                        )
-                        .0;
-
-                        // Find seller's UserStats in remaining_accounts and update claimable_collateral
-                        let mut buyer_credited = false;
-                        for account_info in ctx.remaining_accounts.iter() {
-                            if account_info.key == &buyer_stats_pda {
-                                let mut data = account_info.try_borrow_mut_data()?;
-                                let mut buyer_stats = UserStats::try_deserialize(&mut &data[..])?;
-
-                                buyer_stats.claimable_yes = buyer_stats
-                                    .claimable_yes
-                                    .checked_add(min_qty)
-                                    .ok_or(PredictionMarketError::MathOverflow)?;
-
-                                let mut writer = &mut data[..];
-                                buyer_stats.try_serialize(&mut writer)?;
-
-                                buyer_credited = true;
-                                break;
-                            }
                         }
-
-                        require!(
-                            buyer_credited,
-                            PredictionMarketError::BuyerStatsAccountNotProvided
-                        );
-
-                        msg!(
-                            "Trade executed: Buyer +{} claimable YES, Seller +{} claimable collateral",
-                            min_qty,
-                            collateral_amount
-                        );
-
-                        // Mark completed orders for removal
-                        if yes_buy_orders[idx].filledquantity == yes_buy_orders[idx].quantity {
-                            yes_buy_orders.remove(idx);
-                            completed_orders.push(yes_buy_orders[idx].clone());
+                        TokenType::No => {
+                            ctx.accounts.user_stats_account.claimable_no = ctx
+                                .accounts
+                                .user_stats_account
+                                .claimable_no
+                                .checked_add(min_qty)
+                                .ok_or(PredictionMarketError::MathOverflow)?;
                         }
-
-                        iteration += 1;
-                    } else {
-                        // No more orders left
-                        break;
                     }
 
-                    // Sorting the buy vec in the Decrement Order
-                    yes_buy_orders.sort_by(|a, b| b.price.cmp(&a.price));
+                    // Credit SELLER (from matching order) with collateral
+                    let seller_pubkey = matching_orders[idx].user_key;
+                    let seller_stats_pda = Pubkey::find_program_address(
+                        &[
+                            b"user_stats",
+                            seller_pubkey.as_ref(),
+                            market.market_id.to_le_bytes().as_ref(),
+                        ],
+                        ctx.program_id,
+                    )
+                    .0;
 
+                    let mut seller_credited = false;
+                    for account_info in ctx.remaining_accounts.iter() {
+                        if account_info.key == &seller_stats_pda {
+                            let mut data = account_info.try_borrow_mut_data()?;
+                            let mut seller_stats = UserStats::try_deserialize(&mut &data[..])?;
+
+                            seller_stats.claimable_collateral = seller_stats
+                                .claimable_collateral
+                                .checked_add(collateral_amount)
+                                .ok_or(PredictionMarketError::MathOverflow)?;
+
+                            let mut writer = &mut data[..];
+                            seller_stats.try_serialize(&mut writer)?;
+
+                            seller_credited = true;
+                            break;
+                        }
+                    }
+
+                    require!(
+                        seller_credited,
+                        PredictionMarketError::SellerStatsAccountNotProvided
+                    );
+
+                    msg!(
+                        "Trade: Buyer +{} claimable {:?}, Seller +{} claimable collateral",
+                        min_qty,
+                        token_type,
+                        collateral_amount
+                    );
+                } else {
+                    // When user is SELLER - credit collateral
+                    ctx.accounts.user_stats_account.claimable_collateral = ctx
+                        .accounts
+                        .user_stats_account
+                        .claimable_collateral
+                        .checked_add(collateral_amount)
+                        .ok_or(PredictionMarketError::MathOverflow)?;
+
+                    // Credit BUYER (from matching order) with YES/NO tokens
+                    let buyer_pubkey = matching_orders[idx].user_key;
+                    let buyer_stats_pda = Pubkey::find_program_address(
+                        &[
+                            b"user_stats",
+                            buyer_pubkey.as_ref(),
+                            market.market_id.to_le_bytes().as_ref(),
+                        ],
+                        ctx.program_id,
+                    )
+                    .0;
+
+                    let mut buyer_credited = false;
+                    for account_info in ctx.remaining_accounts.iter() {
+                        if account_info.key == &buyer_stats_pda {
+                            let mut data = account_info.try_borrow_mut_data()?;
+                            let mut buyer_stats = UserStats::try_deserialize(&mut &data[..])?;
+
+                            match token_type {
+                                TokenType::Yes => {
+                                    buyer_stats.claimable_yes = buyer_stats
+                                        .claimable_yes
+                                        .checked_add(min_qty)
+                                        .ok_or(PredictionMarketError::MathOverflow)?;
+                                }
+                                TokenType::No => {
+                                    buyer_stats.claimable_no = buyer_stats
+                                        .claimable_no
+                                        .checked_add(min_qty)
+                                        .ok_or(PredictionMarketError::MathOverflow)?;
+                                }
+                            }
+
+                            let mut writer = &mut data[..];
+                            buyer_stats.try_serialize(&mut writer)?;
+
+                            buyer_credited = true;
+                            break;
+                        }
+                    }
+
+                    require!(
+                        buyer_credited,
+                        PredictionMarketError::BuyerStatsAccountNotProvided
+                    );
+
+                    msg!(
+                        "Trade: Seller +{} claimable collateral, Buyer +{} claimable {:?}",
+                        collateral_amount,
+                        min_qty,
+                        token_type
+                    );
+                }
+
+                // Remove completed orders
+                if matching_orders[idx].filledquantity == matching_orders[idx].quantity {
+                    let completed_order = matching_orders.remove(idx);
+                    completed_orders.push(completed_order);
+                    // Don't increment idx since we removed the element
+                } else {
                     idx += 1;
                 }
-            }
-        } else {
-            if side == OrderSide::Buy {
+
+                iteration += 1;
             } else {
+                // No more matching orders
+                break;
             }
         }
 
-        // We will also have to remove the order whose filled quantity == quantity
+        // Sorting Buy order in Decrement & Sell orders in Increment acc. to price
+        if is_buy_order {
+            matching_orders.sort_by(|a, b| a.price.cmp(&b.price));
+        } else {
+            matching_orders.sort_by(|a, b| b.price.cmp(&a.price));
+        }
 
-        // At the end we will arrange all the order in the Chronological Order
+        // If order is not fully filled, add it to the appropriate order book
+        if order.filledquantity < order.quantity {
+            let order_vec = match (token_type, side) {
+                (TokenType::Yes, OrderSide::Buy) => &mut orderbook.yes_buy_orders,
+                (TokenType::Yes, OrderSide::Sell) => &mut orderbook.yes_sell_orders,
+                (TokenType::No, OrderSide::Buy) => &mut orderbook.no_buy_orders,
+                (TokenType::No, OrderSide::Sell) => &mut orderbook.no_sell_orders,
+            };
+
+            order_vec.push(order);
+
+            // Sorting Buy order in Decrement & Sell orders in Increment acc. to price
+            if side == OrderSide::Buy {
+                order_vec.sort_by(|a, b| b.price.cmp(&a.price));
+            } else {
+                order_vec.sort_by(|a, b| a.price.cmp(&b.price));
+            }
+        }
+
+        msg!(
+            "Order processed: {} filled, {} remaining",
+            order.filledquantity,
+            order.quantity - order.filledquantity
+        );
 
         Ok(())
     }
