@@ -411,3 +411,183 @@ pub struct PlaceOrder<'info> {
     pub system_program: Program<'info, System>,
     pub token_program : Program<'info, Token>
 }
+
+
+
+#[derive(Accounts)]
+#[instruction(market_id:u32)]
+pub struct CancelOrder<'info> {
+    #[account(mut)]
+    pub user : Signer<'info>,
+
+    #[account(
+        mut,
+        seeds=[MARKET_SEED, market.market_id.to_le_bytes().as_ref()],
+        bump = market.bump,
+        constraint = market.market_id == market_id,
+    )]
+    pub market : Box<Account<'info, Market>>,
+
+    // Remember this , WE WILL HAVE TO PUT SEEDS IN OUR CUSTOM ACCOUNT
+    #[account(
+        mut,
+        seeds = [ORDERBOOK_SEED ,market.market_id.to_le_bytes().as_ref()],
+        bump = market.bump,
+        constraint = orderbook.market_id == market_id 
+    )]
+    pub orderbook : Box<Account<'info, OrderBook>>,
+
+    #[account(
+        mut,
+        constraint = collateral_vault.key() == market.collateral_vault // We can also used the .owner of vault to verify it's authority of market
+    )]
+    pub collateral_vault : Account<'info, TokenAccount>,
+
+    #[account(
+        mut,
+        constraint = user_collateral.mint == market.collateral_mint,
+        constraint = user_collateral.owner == user.key()
+    )]
+    pub user_collateral : Account<'info, TokenAccount>,
+
+    #[account(
+        mut,
+        seeds = [USER_STATS_SEED, user.key().as_ref(), market_id.to_le_bytes().as_ref()],
+        bump = user_stats_account.bump
+    )]
+    pub user_stats_account : Box<Account<'info,UserStats>>,
+    // this will exist 100% because When user was given Yes NO token, then we made this account 
+
+    #[account(
+        mut,
+        constraint = outcome_yes_mint.key() == market.outcome_yes_mint
+    )]
+    pub outcome_yes_mint: Account<'info, Mint>,
+    
+    #[account(
+        mut,
+        constraint = outcome_no_mint.key() == market.outcome_no_mint
+    )]
+    pub outcome_no_mint: Account<'info, Mint>,
+
+    #[account(
+        mut,
+        constraint = user_outcome_yes.mint == market.outcome_yes_mint,
+        constraint = user_outcome_yes.owner == user.key()
+    )]
+    pub user_outcome_yes: Account<'info, TokenAccount>,
+    
+    #[account(
+        mut,
+        constraint = user_outcome_no.mint == market.outcome_no_mint,
+        constraint = user_outcome_no.owner == user.key()
+    )]
+    pub user_outcome_no: Account<'info, TokenAccount>,
+
+    #[account(
+        mut,
+        constraint = yes_escrow.mint == market.outcome_yes_mint,
+        constraint = yes_escrow.key() == market.yes_escrow
+    )]
+    pub yes_escrow : Account<'info, TokenAccount>,
+
+    #[account(
+        mut,
+        constraint = no_escrow.mint == market.outcome_no_mint,
+        constraint = no_escrow.key() == market.no_escrow
+    )]
+    pub no_escrow : Account<'info, TokenAccount>,
+
+
+    pub system_program: Program<'info, System>,
+    pub token_program : Program<'info, Token>
+}
+
+#[derive(Accounts)]
+#[instruction(market_id:u32)]
+pub struct MarketOrder<'info> {
+    #[account(mut)]
+    pub user : Signer<'info>,
+
+    #[account(
+        mut,
+        seeds=[MARKET_SEED, market.market_id.to_le_bytes().as_ref()],
+        bump = market.bump,
+        constraint = market.market_id == market_id,
+    )]
+    pub market : Box<Account<'info, Market>>,
+
+    // Remember this , WE WILL HAVE TO PUT SEEDS IN OUR CUSTOM ACCOUNT
+    #[account(
+        mut,
+        seeds = [ORDERBOOK_SEED ,market.market_id.to_le_bytes().as_ref()],
+        bump = market.bump,
+        constraint = orderbook.market_id == market_id 
+    )]
+    pub orderbook : Box<Account<'info, OrderBook>>,
+
+    #[account(
+        mut,
+        constraint = collateral_vault.key() == market.collateral_vault // We can also used the .owner of vault to verify it's authority of market
+    )]
+    pub collateral_vault : Account<'info, TokenAccount>,
+
+    #[account(
+        mut,
+        constraint = user_collateral.mint == market.collateral_mint,
+        constraint = user_collateral.owner == user.key()
+    )]
+    pub user_collateral : Account<'info, TokenAccount>,
+
+    #[account(
+        mut,
+        seeds = [USER_STATS_SEED, user.key().as_ref(), market_id.to_le_bytes().as_ref()],
+        bump = user_stats_account.bump
+    )]
+    pub user_stats_account : Box<Account<'info,UserStats>>,
+    // this will exist 100% because When user was given Yes NO token, then we made this account 
+
+    #[account(
+        mut,
+        constraint = outcome_yes_mint.key() == market.outcome_yes_mint
+    )]
+    pub outcome_yes_mint: Account<'info, Mint>,
+    
+    #[account(
+        mut,
+        constraint = outcome_no_mint.key() == market.outcome_no_mint
+    )]
+    pub outcome_no_mint: Account<'info, Mint>,
+
+    #[account(
+        mut,
+        constraint = user_outcome_yes.mint == market.outcome_yes_mint,
+        constraint = user_outcome_yes.owner == user.key()
+    )]
+    pub user_outcome_yes: Account<'info, TokenAccount>,
+    
+    #[account(
+        mut,
+        constraint = user_outcome_no.mint == market.outcome_no_mint,
+        constraint = user_outcome_no.owner == user.key()
+    )]
+    pub user_outcome_no: Account<'info, TokenAccount>,
+
+    #[account(
+        mut,
+        constraint = yes_escrow.mint == market.outcome_yes_mint,
+        constraint = yes_escrow.key() == market.yes_escrow
+    )]
+    pub yes_escrow : Account<'info, TokenAccount>,
+
+    #[account(
+        mut,
+        constraint = no_escrow.mint == market.outcome_no_mint,
+        constraint = no_escrow.key() == market.no_escrow
+    )]
+    pub no_escrow : Account<'info, TokenAccount>,
+
+
+    pub system_program: Program<'info, System>,
+    pub token_program : Program<'info, Token>
+}

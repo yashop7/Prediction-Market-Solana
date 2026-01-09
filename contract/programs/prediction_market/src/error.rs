@@ -30,5 +30,9 @@ pub enum PredictionMarketError {
     SellerStatsAccountNotProvided,
     #[msg("Buyer's UserStats account not provided in remaining_accounts")]
     BuyerStatsAccountNotProvided,
+    #[msg("Not authorized")]
+    NotAuthorized,
+    #[msg("Order not found")]
+    OrdernotFound
 
 }

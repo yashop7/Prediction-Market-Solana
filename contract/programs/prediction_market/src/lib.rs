@@ -348,15 +348,15 @@ pub mod prediction_market {
     ///   - SELL order: Seller's YES/NO tokens locked in escrow immediately
     ///   - BUY order: Buyer's collateral locked in vault immediately
     /// - When matched:
-    ///   - Buyer's claimable_yes incremented in their UserStats (can claim later from dashboard)
-    ///   - Seller will withdraw collateral from vault separately
+    ///   - Buyer's & Sellers claimable amount will be incremented in their UserStats Account (user can claim later from dashboard)
+    ///   - Person whose order is on the orderbook first can withdraw collateral from vault separately
     pub fn place_order(
         ctx: Context<PlaceOrder>,
         side: OrderSide,
         token_type: TokenType,
         quantity: u64,
-        max_iteration: u64,
         price: u64,
+        max_iteration: u64,
     ) -> Result<()> {
         let market = &mut ctx.accounts.market;
         let orderbook = &mut ctx.accounts.orderbook;
@@ -725,6 +725,165 @@ pub mod prediction_market {
         );
 
         Ok(())
+    }
+
+    pub fn cancel_order(ctx: Context<CancelOrder>, order_id: u64) -> Result<()> {
+        // Order
+        // Iterate from the OrderBook, Remove that Order
+        // Reduce the Locked Amount from the User Stats Account
+        // Transfer his assets Escrow => User Token Account
+
+        let market = &mut ctx.accounts.market;
+        let orderbook = &mut ctx.accounts.orderbook;
+
+        require!(
+            Clock::get()?.unix_timestamp < market.settlement_deadline,
+            PredictionMarketError::MarketExpired
+        );
+
+        require!(
+            !market.is_settled,
+            PredictionMarketError::MarketAlreadySettled
+        );
+
+        // Search for the order across all order books sequentially
+        let mut found_order: Option<Order> = None;
+        let mut order_side = OrderSide::Buy;
+        let mut order_token_type = TokenType::Yes;
+
+        // Check each order book one at a time
+        if let Some(idx) = orderbook
+            .yes_buy_orders
+            .iter()
+            .position(|o| o.id == order_id)
+        {
+            found_order = Some(orderbook.yes_buy_orders.remove(idx));
+            order_side = OrderSide::Buy;
+            order_token_type = TokenType::Yes;
+        } else if let Some(idx) = orderbook
+            .yes_sell_orders
+            .iter()
+            .position(|o| o.id == order_id)
+        {
+            found_order = Some(orderbook.yes_sell_orders.remove(idx));
+            order_side = OrderSide::Sell;
+            order_token_type = TokenType::Yes;
+        } else if let Some(idx) = orderbook
+            .no_buy_orders
+            .iter()
+            .position(|o| o.id == order_id)
+        {
+            found_order = Some(orderbook.no_buy_orders.remove(idx));
+            order_side = OrderSide::Buy;
+            order_token_type = TokenType::No;
+        } else if let Some(idx) = orderbook
+            .no_sell_orders
+            .iter()
+            .position(|o| o.id == order_id)
+        {
+            found_order = Some(orderbook.no_sell_orders.remove(idx));
+            order_side = OrderSide::Sell;
+            order_token_type = TokenType::No;
+        }
+
+        let order_found = found_order.ok_or(PredictionMarketError::OrdernotFound)?;
+        require!(
+            ctx.accounts.user.key() == order_found.user_key,
+            PredictionMarketError::NotAuthorized
+        );
+
+        // Reducing the Locked Quantity
+
+        if order_side == OrderSide::Buy {
+            // For buy orders, unlock collateral
+            let locked_amount = order_found
+                .quantity
+                .checked_sub(order_found.filledquantity)
+                .ok_or(PredictionMarketError::MathOverflow)?
+                .checked_mul(order_found.price)
+                .ok_or(PredictionMarketError::MathOverflow)?;
+
+            ctx.accounts.user_stats_account.locked_collateral = ctx
+                .accounts
+                .user_stats_account
+                .locked_collateral
+                .checked_sub(locked_amount)
+                .ok_or(PredictionMarketError::MathOverflow)?;
+
+            // Transfer collateral back to user
+            let market_id_bytes = market.market_id.to_le_bytes();
+            let seeds = &[b"market", market_id_bytes.as_ref(), &[market.bump]];
+
+            token::transfer(
+                CpiContext::new_with_signer(
+                    ctx.accounts.token_program.to_account_info(),
+                    Transfer {
+                        from: ctx.accounts.collateral_vault.to_account_info(),
+                        to: ctx.accounts.user_collateral.to_account_info(),
+                        authority: market.to_account_info(),
+                    },
+                    &[seeds],
+                ),
+                locked_amount,
+            )?;
+        } else {
+            // For sell orders, unlock tokens
+            let locked_quantity = order_found
+                .quantity
+                .checked_sub(order_found.filledquantity)
+                .ok_or(PredictionMarketError::MathOverflow)?;
+
+            let (user_token_account, token_escrow) = match order_token_type {
+                TokenType::Yes => (&ctx.accounts.user_outcome_yes, &ctx.accounts.yes_escrow),
+                TokenType::No => (&ctx.accounts.user_outcome_no, &ctx.accounts.no_escrow),
+            };
+
+            match order_token_type {
+                TokenType::Yes => {
+                    ctx.accounts.user_stats_account.locked_yes = ctx
+                        .accounts
+                        .user_stats_account
+                        .locked_yes
+                        .checked_sub(locked_quantity)
+                        .ok_or(PredictionMarketError::MathOverflow)?;
+                }
+                TokenType::No => {
+                    ctx.accounts.user_stats_account.locked_no = ctx
+                        .accounts
+                        .user_stats_account
+                        .locked_no
+                        .checked_sub(locked_quantity)
+                        .ok_or(PredictionMarketError::MathOverflow)?;
+                }
+            }
+
+            // Transfer tokens back from escrow to user
+            let market_id_bytes = market.market_id.to_le_bytes();
+            let seeds = &[b"market", market_id_bytes.as_ref(), &[market.bump]];
+
+            token::transfer(
+                CpiContext::new_with_signer(
+                    ctx.accounts.token_program.to_account_info(),
+                    Transfer {
+                        from: token_escrow.to_account_info(),
+                        to: user_token_account.to_account_info(),
+                        authority: market.to_account_info(),
+                    },
+                    &[seeds],
+                ),
+                locked_quantity,
+            )?;
+        }
+
+        msg!("Order {} cancelled successfully", order_id);
+
+        // Reducing the Locked amount from the User Userstats account
+
+        Ok(())
+    }
+
+    pub fn market_order(ctx: Context<MarketOrder>,) -> Result<()> {
+        
     }
 }
 
